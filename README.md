@@ -21,7 +21,7 @@ What it does:
   - min/max tooth range.
 - Adjustable belt pitch, tooth height, pulley thickness, tip clearance, and bores.
 - Manual center distance or auto center distance from belt pitch count.
-- Creates separate drive and driven pulley components.
+- Creates separate drive and driven toothed pulley components.
 - Tags generated pulleys with custom Fusion attributes for robust downstream detection.
 - Optional CSV summary export for basic BOM/reporting.
 
