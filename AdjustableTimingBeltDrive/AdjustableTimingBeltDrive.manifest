@@ -1,0 +1,13 @@
+{
+  "autodeskProduct": "Fusion360",
+  "type": "addin",
+  "id": "58460eaf-de50-4d42-aa0b-726e2de879dd",
+  "author": "le-nicolas",
+  "description": {
+    "": "Generates a timing belt loop around drive and driven pulleys using automatic or manual center distance."
+  },
+  "version": "1.0.0",
+  "runOnStartup": false,
+  "supportedOS": "windows|mac",
+  "editEnabled": true
+}

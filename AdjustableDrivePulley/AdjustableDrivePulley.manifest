@@ -1,0 +1,13 @@
+{
+  "autodeskProduct": "Fusion360",
+  "type": "addin",
+  "id": "b5603e7a-822e-4bd6-96fb-fa0a25eae2cd",
+  "author": "le-nicolas",
+  "description": {
+    "": "Creates adjustable drive and driven timing pulleys with belt-based center-distance options."
+  },
+  "version": "1.1.0",
+  "runOnStartup": false,
+  "supportedOS": "windows|mac",
+  "editEnabled": true
+}
