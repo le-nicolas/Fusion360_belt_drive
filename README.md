@@ -62,9 +62,9 @@ What it does:
 Notes:
 
 - Auto tooth count chooses the nearest practical count and reports effective pitch deviation.
-- Can force even tooth count and explicitly reports offset-link style requirements.
+- Can force even tooth count and explicitly reports odd-tooth phase-indexing notes.
 - Warns when center distance is outside `30-50` pitches and when computed wrap angle is low.
-- Geometry is generated as pitch markers for practical layout and visualization.
+- Geometry is generated as an actual belt body with repeated inward-facing tooth profiles along the path.
 
 ## Install in Fusion 360
 

@@ -79,6 +79,30 @@ def _point_from_angle(center_xy, radius, angle):
     return (center_xy[0] + (radius * math.cos(angle)), center_xy[1] + (radius * math.sin(angle)))
 
 
+def _normalize_2d(vx, vy):
+    mag = math.sqrt((vx * vx) + (vy * vy))
+    if mag <= 1e-9:
+        return (0.0, 0.0)
+    return (vx / mag, vy / mag)
+
+
+def _point3d_xy(xy):
+    return adsk.core.Point3D.create(xy[0], xy[1], 0)
+
+
+def _polygon_area_2d(points):
+    if len(points) < 3:
+        return 0.0
+
+    area = 0.0
+    for i in range(len(points)):
+        p1 = points[i]
+        p2 = points[(i + 1) % len(points)]
+        area += (p1[0] * p2[1]) - (p2[0] * p1[1])
+
+    return area * 0.5
+
+
 def _pitch_radius(belt_pitch, tooth_count):
     return belt_pitch / (2.0 * math.sin(math.pi / float(tooth_count)))
 
@@ -277,40 +301,95 @@ def _compute_belt_path(c1_xy, c2_xy, r1, r2):
     }
 
 
-def _sample_belt_points(path_data, link_count):
-    points = []
-
+def _path_frame_at(path_data, s):
     segment_1_end = path_data['upper_length']
     segment_2_end = segment_1_end + path_data['arc2_length']
     segment_3_end = segment_2_end + path_data['lower_length']
 
-    step = path_data['total_length'] / float(link_count)
-
-    for i in range(link_count):
-        s = i * step
-
-        if s < segment_1_end:
+    if s < segment_1_end:
+        if path_data['upper_length'] <= 1e-9:
+            point_xy = path_data['p1_upper']
+        else:
             t = s / path_data['upper_length']
             point_xy = _lerp(path_data['p1_upper'], path_data['p2_upper'], t)
 
-        elif s < segment_2_end:
-            arc_s = s - segment_1_end
-            angle = path_data['angle_2_upper'] + (arc_s / path_data['radius_2'])
-            point_xy = _point_from_angle(path_data['center_2'], path_data['radius_2'], angle)
+        tangent = _normalize_2d(
+            path_data['p2_upper'][0] - path_data['p1_upper'][0],
+            path_data['p2_upper'][1] - path_data['p1_upper'][1],
+        )
 
-        elif s < segment_3_end:
-            line_s = s - segment_2_end
+        v1 = _normalize_2d(
+            path_data['center_1'][0] - point_xy[0],
+            path_data['center_1'][1] - point_xy[1],
+        )
+        v2 = _normalize_2d(
+            path_data['center_2'][0] - point_xy[0],
+            path_data['center_2'][1] - point_xy[1],
+        )
+        inward = _normalize_2d(v1[0] + v2[0], v1[1] + v2[1])
+
+    elif s < segment_2_end:
+        arc_s = s - segment_1_end
+        angle = path_data['angle_2_upper'] + (arc_s / path_data['radius_2'])
+        point_xy = _point_from_angle(path_data['center_2'], path_data['radius_2'], angle)
+        tangent = _normalize_2d(-math.sin(angle), math.cos(angle))
+        inward = _normalize_2d(
+            path_data['center_2'][0] - point_xy[0],
+            path_data['center_2'][1] - point_xy[1],
+        )
+
+    elif s < segment_3_end:
+        line_s = s - segment_2_end
+        if path_data['lower_length'] <= 1e-9:
+            point_xy = path_data['p2_lower']
+        else:
             t = line_s / path_data['lower_length']
             point_xy = _lerp(path_data['p2_lower'], path_data['p1_lower'], t)
 
-        else:
-            arc_s = s - segment_3_end
-            angle = path_data['angle_1_lower'] + (arc_s / path_data['radius_1'])
-            point_xy = _point_from_angle(path_data['center_1'], path_data['radius_1'], angle)
+        tangent = _normalize_2d(
+            path_data['p1_lower'][0] - path_data['p2_lower'][0],
+            path_data['p1_lower'][1] - path_data['p2_lower'][1],
+        )
 
-        points.append(adsk.core.Point3D.create(point_xy[0], point_xy[1], 0))
+        v1 = _normalize_2d(
+            path_data['center_1'][0] - point_xy[0],
+            path_data['center_1'][1] - point_xy[1],
+        )
+        v2 = _normalize_2d(
+            path_data['center_2'][0] - point_xy[0],
+            path_data['center_2'][1] - point_xy[1],
+        )
+        inward = _normalize_2d(v1[0] + v2[0], v1[1] + v2[1])
 
-    return points, step
+    else:
+        arc_s = s - segment_3_end
+        angle = path_data['angle_1_lower'] + (arc_s / path_data['radius_1'])
+        point_xy = _point_from_angle(path_data['center_1'], path_data['radius_1'], angle)
+        tangent = _normalize_2d(-math.sin(angle), math.cos(angle))
+        inward = _normalize_2d(
+            path_data['center_1'][0] - point_xy[0],
+            path_data['center_1'][1] - point_xy[1],
+        )
+
+    if inward == (0.0, 0.0):
+        inward = _normalize_2d(-tangent[1], tangent[0])
+
+    return {
+        'point': point_xy,
+        'tangent': tangent,
+        'inward': inward,
+    }
+
+
+def _sample_belt_frames(path_data, tooth_count):
+    frames = []
+    step = path_data['total_length'] / float(tooth_count)
+
+    for i in range(tooth_count):
+        s = i * step
+        frames.append(_path_frame_at(path_data, s))
+
+    return frames, step
 
 
 def _create_reference_sketch(component, path_data):
@@ -342,36 +421,129 @@ def _create_reference_sketch(component, path_data):
     lower_line.isConstruction = True
 
 
-def _create_belt_rollers(component, belt_points, roller_radius, belt_width):
-    if not belt_points:
-        raise RuntimeError('No belt points were generated.')
+def _select_profile_by_target_area(sketch, target_area):
+    best_profile = None
+    best_error = None
 
-    sketch = component.sketches.add(component.xYConstructionPlane)
-    circles = sketch.sketchCurves.sketchCircles
-
-    for point in belt_points:
-        circles.addByCenterRadius(point, roller_radius)
-
-    expected_area = math.pi * roller_radius * roller_radius
-    max_area = expected_area * 2.5
-
-    profiles = []
     for i in range(sketch.profiles.count):
         profile = sketch.profiles.item(i)
-        if profile.areaProperties().area < max_area:
-            profiles.append(profile)
+        area = profile.areaProperties().area
+        if area <= 0:
+            continue
 
-    if not profiles:
-        raise RuntimeError('Could not determine roller profiles from belt sketch.')
+        error = abs(area - target_area)
+        if (best_error is None) or (error < best_error):
+            best_error = error
+            best_profile = profile
+
+    return best_profile
+
+
+def _create_belt_base_body(component, path_data, belt_width, inner_offset, outer_offset, sample_count):
+    samples = max(80, int(sample_count))
+    outer_points = []
+    inner_points = []
+
+    step = path_data['total_length'] / float(samples)
+    for i in range(samples):
+        frame = _path_frame_at(path_data, i * step)
+        p = frame['point']
+        n = frame['inward']
+
+        inner_points.append((p[0] + (n[0] * inner_offset), p[1] + (n[1] * inner_offset)))
+        outer_points.append((p[0] - (n[0] * outer_offset), p[1] - (n[1] * outer_offset)))
+
+    sketch = component.sketches.add(component.xYConstructionPlane)
+    lines = sketch.sketchCurves.sketchLines
+
+    for i in range(samples):
+        lines.addByTwoPoints(
+            _point3d_xy(outer_points[i]),
+            _point3d_xy(outer_points[(i + 1) % samples]),
+        )
+
+    for i in range(samples):
+        a = inner_points[(samples - i) % samples]
+        b = inner_points[(samples - i - 1) % samples]
+        lines.addByTwoPoints(_point3d_xy(a), _point3d_xy(b))
+
+    target_area = abs(_polygon_area_2d(outer_points)) - abs(_polygon_area_2d(inner_points))
+    if target_area <= 0:
+        raise RuntimeError('Computed belt area is invalid for the current geometry.')
+
+    belt_profile = _select_profile_by_target_area(sketch, target_area)
+    if not belt_profile:
+        raise RuntimeError('Could not determine timing belt base profile.')
 
     extrudes = component.features.extrudeFeatures
-    for i, profile in enumerate(profiles):
-        extrude_input = extrudes.createInput(profile, adsk.fusion.FeatureOperations.NewBodyFeatureOperation)
-        extrude_input.setDistanceExtent(False, adsk.core.ValueInput.createByReal(belt_width))
-        extrude = extrudes.add(extrude_input)
+    belt_extrude_input = extrudes.createInput(
+        belt_profile,
+        adsk.fusion.FeatureOperations.NewBodyFeatureOperation,
+    )
+    belt_extrude_input.setDistanceExtent(False, adsk.core.ValueInput.createByReal(belt_width))
+    belt_extrude = extrudes.add(belt_extrude_input)
 
-        if extrude.bodies.count > 0:
-            extrude.bodies.item(0).name = 'BeltToothMarker_{}'.format(i + 1)
+    if belt_extrude.bodies.count > 0:
+        belt_extrude.bodies.item(0).name = 'TimingBelt_Base'
+
+    return belt_extrude
+
+
+def _create_belt_teeth(component, belt_frames, tooth_pitch, tooth_height, belt_width, inner_offset):
+    if not belt_frames:
+        raise RuntimeError('No belt tooth frames were generated.')
+
+    base_half = max(tooth_pitch * 0.26, tooth_height * 0.25)
+    tip_half = max(tooth_pitch * 0.16, tooth_height * 0.14)
+    tooth_depth = tooth_height * 0.78
+    root_offset = max(inner_offset * 0.72, tooth_height * 0.05)
+
+    tooth_sketch = component.sketches.add(component.xYConstructionPlane)
+    lines = tooth_sketch.sketchCurves.sketchLines
+
+    for frame in belt_frames:
+        p = frame['point']
+        t = frame['tangent']
+        n = frame['inward']
+
+        base_center = (p[0] + (n[0] * root_offset), p[1] + (n[1] * root_offset))
+        tip_center = (
+            base_center[0] + (n[0] * tooth_depth),
+            base_center[1] + (n[1] * tooth_depth),
+        )
+
+        p1 = (base_center[0] + (t[0] * base_half), base_center[1] + (t[1] * base_half))
+        p2 = (tip_center[0] + (t[0] * tip_half), tip_center[1] + (t[1] * tip_half))
+        p3 = (tip_center[0] - (t[0] * tip_half), tip_center[1] - (t[1] * tip_half))
+        p4 = (base_center[0] - (t[0] * base_half), base_center[1] - (t[1] * base_half))
+
+        lines.addByTwoPoints(_point3d_xy(p1), _point3d_xy(p2))
+        lines.addByTwoPoints(_point3d_xy(p2), _point3d_xy(p3))
+        lines.addByTwoPoints(_point3d_xy(p3), _point3d_xy(p4))
+        lines.addByTwoPoints(_point3d_xy(p4), _point3d_xy(p1))
+
+    expected_area = (base_half + tip_half) * tooth_depth
+    min_area = expected_area * 0.25
+    max_area = expected_area * 4.0
+
+    tooth_profiles = []
+    for i in range(tooth_sketch.profiles.count):
+        profile = tooth_sketch.profiles.item(i)
+        area = profile.areaProperties().area
+        if min_area <= area <= max_area:
+            tooth_profiles.append(profile)
+
+    if not tooth_profiles:
+        raise RuntimeError('Could not determine timing belt tooth profiles.')
+
+    extrudes = component.features.extrudeFeatures
+    for profile in tooth_profiles:
+        tooth_extrude_input = extrudes.createInput(
+            profile,
+            adsk.fusion.FeatureOperations.JoinFeatureOperation,
+        )
+        tooth_extrude_input.setDistanceExtent(False, adsk.core.ValueInput.createByReal(belt_width))
+        extrudes.add(tooth_extrude_input)
 
 def _validate_inputs(
     drive_teeth,
@@ -399,7 +571,7 @@ def _validate_inputs(
         errors.append('Manual center distance must be positive when selection mode is off.')
 
     if (not auto_link_count) and (requested_link_count < 10):
-        errors.append('Manual link count must be at least 10.')
+        errors.append('Manual belt tooth count must be at least 10.')
 
     return errors
 
@@ -438,8 +610,8 @@ def _half_link_note(link_count, drive_teeth, driven_teeth):
     if link_count % 2 == 0:
         return None
     if drive_teeth == driven_teeth:
-        return 'Odd link count with equal-size pulleys requires a half-link (offset link).'
-    return 'Odd link count requires a half-link (offset link).'
+        return 'Odd belt tooth count with equal pulleys can require phase indexing during installation.'
+    return 'Odd belt tooth count can require phase indexing during installation.'
 
 
 def _format_issues(issues):
@@ -554,10 +726,10 @@ def _build_preview_text(inputs):
             enforce_even_links,
         )
         lines.append('Estimated loop length: {:.3f} mm'.format(path_data['total_length'] * 10.0))
-        lines.append('Preview link count: {}'.format(final_count))
+        lines.append('Preview belt tooth count: {}'.format(final_count))
 
         if even_adjusted:
-            lines.append('Note: rounded from {} to {} to keep an even count.'.format(raw_count, final_count))
+            lines.append('Note: rounded from {} to {} to keep an even tooth count.'.format(raw_count, final_count))
 
         half_link = _half_link_note(final_count, drive_teeth, driven_teeth)
         if half_link:
@@ -615,15 +787,15 @@ class CommandCreatedHandler(adsk.core.CommandCreatedEventHandler):
 
             inputs.addValueInput('manualCenterDistance', 'Manual Center Distance', 'mm', adsk.core.ValueInput.createByString('150 mm'))
 
-            inputs.addBoolValueInput('autoLinkCount', 'Auto Link Count', True, '', True)
-            inputs.addIntegerSpinnerCommandInput('linkCount', 'Manual Link Count', 10, 6000, 1, 120)
-            inputs.addBoolValueInput('enforceEvenLinks', 'Force Even Link Count', True, '', True)
+            inputs.addBoolValueInput('autoLinkCount', 'Auto Belt Tooth Count', True, '', True)
+            inputs.addIntegerSpinnerCommandInput('linkCount', 'Manual Belt Tooth Count', 10, 6000, 1, 120)
+            inputs.addBoolValueInput('enforceEvenLinks', 'Force Even Tooth Count', True, '', True)
             inputs.addBoolValueInput('exportCsv', 'Export CSV Summary', True, '', False)
 
             inputs.addTextBoxCommandInput(
                 'previewInfo',
                 'Live Summary',
-                'Adjust values to preview center distance, link count, and warnings.',
+                'Adjust values to preview center distance, belt tooth count, and warnings.',
                 8,
                 True,
             )
@@ -768,12 +940,12 @@ class CommandExecuteHandler(adsk.core.CommandEventHandler):
                 enforce_even_links,
             )
             if link_count < 10:
-                ui.messageBox('Link count is too small to form a stable belt loop.')
+                ui.messageBox('Belt tooth count is too small to form a stable belt loop.')
                 return
 
-            belt_points, actual_pitch = _sample_belt_points(path_data, link_count)
-            if len(belt_points) < 4:
-                ui.messageBox('Failed to generate sufficient belt points.')
+            belt_frames, actual_pitch = _sample_belt_frames(path_data, link_count)
+            if len(belt_frames) < 4:
+                ui.messageBox('Failed to generate sufficient belt tooth positions.')
                 return
 
             engineering_warnings = _center_distance_warnings(center_distance, belt_pitch)
@@ -795,7 +967,7 @@ class CommandExecuteHandler(adsk.core.CommandEventHandler):
 
             if even_adjusted:
                 engineering_warnings.append(
-                    'Link count adjusted from {} to {} to keep an even count and avoid a half-link.'.format(
+                    'Belt tooth count adjusted from {} to {} to keep an even count.'.format(
                         raw_link_count,
                         link_count,
                     )
@@ -814,8 +986,29 @@ class CommandExecuteHandler(adsk.core.CommandEventHandler):
             belt_component = belt_occurrence.component
             belt_component.name = 'Timing Belt Drive {}T-{}T'.format(drive_teeth, driven_teeth)
 
+            belt_tooth_height = roller_diameter
+            belt_inner_offset = max(0.08 * belt_tooth_height, 0.03 * belt_pitch)
+            belt_backing_thickness = max(0.40 * belt_tooth_height, 0.18 * belt_pitch)
+            belt_outer_offset = belt_backing_thickness + (0.16 * belt_tooth_height)
+            belt_profile_samples = max(180, link_count * 4)
+
             _create_reference_sketch(belt_component, path_data)
-            _create_belt_rollers(belt_component, belt_points, roller_diameter / 2.0, belt_width)
+            _create_belt_base_body(
+                belt_component,
+                path_data,
+                belt_width,
+                belt_inner_offset,
+                belt_outer_offset,
+                belt_profile_samples,
+            )
+            _create_belt_teeth(
+                belt_component,
+                belt_frames,
+                actual_pitch,
+                belt_tooth_height,
+                belt_width,
+                belt_inner_offset,
+            )
 
             center_mm = center_distance * 10.0
             center_pitches = center_distance / belt_pitch
@@ -836,16 +1029,19 @@ class CommandExecuteHandler(adsk.core.CommandEventHandler):
                     ('CenterDistance_mm', '{:.4f}'.format(center_mm)),
                     ('CenterDistance_pitches', '{:.6f}'.format(center_pitches)),
                     ('CenterSource', center_source),
-                    ('AutoLinkCount', str(auto_link_count)),
-                    ('RawLinkCount', str(raw_link_count)),
-                    ('FinalLinkCount', str(link_count)),
-                    ('EvenLinkAdjusted', str(even_adjusted)),
-                    ('HalfLinkRequired', str(half_link_required)),
+                    ('AutoBeltToothCount', str(auto_link_count)),
+                    ('RawBeltToothCount', str(raw_link_count)),
+                    ('FinalBeltToothCount', str(link_count)),
+                    ('EvenToothAdjusted', str(even_adjusted)),
+                    ('OddToothPhaseIndexingNote', str(half_link_required)),
                     ('EffectivePitch_mm', '{:.4f}'.format(actual_pitch_mm)),
                     ('PitchDeviation_pct', '{:.6f}'.format(pitch_error_pct)),
                     ('DriveWrap_deg', '{:.4f}'.format(drive_wrap_deg)),
                     ('DrivenWrap_deg', '{:.4f}'.format(driven_wrap_deg)),
                     ('ZMismatch_mm', '{:.4f}'.format(z_mismatch * 10.0)),
+                    ('BeltInnerOffset_mm', '{:.4f}'.format(belt_inner_offset * 10.0)),
+                    ('BeltBackingThickness_mm', '{:.4f}'.format(belt_backing_thickness * 10.0)),
+                    ('BeltOuterOffset_mm', '{:.4f}'.format(belt_outer_offset * 10.0)),
                     ('EngineeringWarnings', ' | '.join(engineering_warnings) if engineering_warnings else ''),
                 ]
 
@@ -864,8 +1060,8 @@ class CommandExecuteHandler(adsk.core.CommandEventHandler):
                 'Drive teeth: {}\n'
                 'Driven teeth: {}\n'
                 'Center distance: {:.3f} mm ({:.3f} pitches)\n'
-                'Link count: {}\n'
-                'Half-link required: {}\n'
+                'Belt tooth count: {}\n'
+                'Odd-tooth phase indexing note: {}\n'
                 'Requested pitch: {:.3f} mm\n'
                 'Effective pitch: {:.3f} mm\n'
                 'Pitch deviation: {:.3f}%\n'
